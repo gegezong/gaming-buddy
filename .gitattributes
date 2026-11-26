@@ -1,0 +1,28 @@
+# 行尾规范: 仓库内统一存 LF, 检出时按平台转换(Windows CRLF / Linux LF)
+# 说明: Windows 上若不声明此文件, 各机器检出结果不一致, 会导致 git status 出现大量
+#      整文件级别的伪改动(每个文件都显示 M), 干扰真正的代码审查。
+* text=auto
+
+*.py    text eol=lf
+*.vue   text eol=lf
+*.js    text eol=lf
+*.json  text eol=lf
+*.md    text eol=lf
+*.sql   text eol=lf
+*.txt   text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+
+# 二进制资源不做行尾转换
+*.jpg   binary
+*.jpeg  binary
+*.png   binary
+*.gif   binary
+*.ico   binary
+*.woff  binary
+*.woff2 binary
+*.ttf   binary
+*.docx  binary
+*.xlsx  binary
+*.pdf   binary
+*.zip   binary

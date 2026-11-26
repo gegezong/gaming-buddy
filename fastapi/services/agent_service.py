@@ -9,6 +9,7 @@ AI 助手业务层（会话/消息 CRUD + Agent 配置管理）
 from datetime import datetime, timedelta  # 标准库: 时间写入与统计窗口
 
 from sqlalchemy import delete, func, select, update  # 第三方: 列表达式/聚合/更新
+from sqlalchemy.exc import IntegrityError  # 第三方: 完整性冲突异常(主键重复)
 from sqlalchemy.orm import Session  # 第三方: 会话类型标注
 
 from core.common import entity_to_dict, update_by_pk  # 项目内: 实体转字典/按主键更新
@@ -108,11 +109,25 @@ def append_message(db: Session, conversation_id: int, role: str, content: str,
     msg = AgentMessage(conversation_id=conversation_id, role=role, agent_name=agent_name,
                        content=content, create_time=datetime.now())  # 新消息实体
     db.add(msg)  # 加入会话
-    db.execute(  # 手动刷新活跃时间(仅 INSERT 不会触发会话表的 ON UPDATE)
-        update(AgentConversation).where(AgentConversation.conversation_id == conversation_id)
-        .values(update_time=datetime.now())
-    )
-    db.commit()  # 消息 + 活跃时间同事务提交
+    try:
+        db.execute(  # 手动刷新活跃时间(仅 INSERT 不会触发会话表的 ON UPDATE)
+            update(AgentConversation).where(AgentConversation.conversation_id == conversation_id)
+            .values(update_time=datetime.now())
+        )
+        db.commit()  # 消息 + 活跃时间同事务提交
+    except IntegrityError as e:  # 主键冲突: 回滚后重试一次
+        # 并发写入时 InnoDB 可能把同一自增值分配给两个事务, 落败方报 Duplicate entry。
+        # 计数器已由后端启动自愈保证对齐, 重试通常即取到下一个可用值。
+        db.rollback()
+        print(f"[WARN] agent_message 主键冲突, 已回滚并重试: {e}")  # 记录可观测日志
+        msg = AgentMessage(conversation_id=conversation_id, role=role, agent_name=agent_name,
+                           content=content, create_time=datetime.now())  # 重建消息实体
+        db.add(msg)  # 重新加入会话
+        db.execute(  # 刷新活跃时间
+            update(AgentConversation).where(AgentConversation.conversation_id == conversation_id)
+            .values(update_time=datetime.now())
+        )
+        db.commit()  # 二次提交
     return entity_to_dict(msg)  # 返回含主键的消息字典
 
 

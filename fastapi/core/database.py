@@ -3,7 +3,7 @@
 """
 # 第三方: SQLAlchemy 引擎创建与 ORM 声明基类/Session 工厂
 from pymysql.constants import CLIENT  # 第三方: MySQL 客户端标志位(FOUND_ROWS 行数语义)
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text  # 第三方: 引擎创建 / 原生 SQL 文本
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 # 项目内: 读取数据库连接配置
@@ -36,3 +36,41 @@ def get_db():
         yield db  # 生成器依赖: 把 Session 注入路由函数使用
     finally:
         db.close()  # 请求结束(无论成败)关闭 Session 归还连接池
+
+
+def align_auto_increment() -> list[str]:
+    """自增计数器自愈: 把 AUTO_INCREMENT 落后于实际最大主键的表修正到 max(主键)+1
+
+    背景: 种子脚本由 Navicat 导出, 其 ENGINE = InnoDB AUTO_INCREMENT = N 只反映导出那一刻的
+    计数器, 不保证大于表内最大主键; 运行期若计数器与实际主键脱节, 下一次插入会撞主键,
+    报 "Duplicate entry 'N' for key 'xxx.PRIMARY'"(实测 agent_message / private_message 命中)。
+
+    关键点: information_schema.TABLES 的 AUTO_INCREMENT 默认被统计缓存 24 小时
+    (information_schema_stats_expiry=86400), 读到的是陈旧值。若据此判定"计数器落后"并执行
+    ALTER, 反而会把一个健康的高计数器改低(如真实 200 被按陈旧值改成 92), 制造新的主键冲突。
+    因此这里先把会话的统计过期时间置 0, 强制读取实时值后再判断, 只在确实落后时才修正。
+    ALTER TABLE ... AUTO_INCREMENT 会被 MySQL 钳制到 max(主键)+1, 不会造成数据风险。
+    """
+    fixed: list[str] = []  # 被修正的表清单
+    with engine.connect() as conn:  # 取连接执行元数据查询
+        conn.execute(text("SET SESSION information_schema_stats_expiry = 0"))  # 关闭统计缓存, 读实时值
+        rows = conn.execute(text("""
+            SELECT t.TABLE_NAME, c.COLUMN_NAME, t.AUTO_INCREMENT
+            FROM information_schema.TABLES t
+            JOIN information_schema.COLUMNS c
+              ON c.TABLE_SCHEMA = t.TABLE_SCHEMA AND c.TABLE_NAME = t.TABLE_NAME
+             AND c.COLUMN_KEY = 'PRI'
+            WHERE t.TABLE_SCHEMA = :db AND t.AUTO_INCREMENT IS NOT NULL
+              AND t.TABLE_TYPE = 'BASE TABLE'
+        """), {"db": settings.db_name}).mappings().all()
+        for r in rows:  # 逐表比对计数器与实际最大主键
+            tbl = r["TABLE_NAME"]
+            pk = r["COLUMN_NAME"]
+            ai = r["AUTO_INCREMENT"]
+            mx = conn.execute(text(f"SELECT COALESCE(MAX(`{pk}`), 0) FROM `{tbl}`")).scalar() or 0
+            if ai <= mx:  # 实时计数器确实落后 -> 校准到 max+1
+                conn.execute(text(f"ALTER TABLE `{tbl}` AUTO_INCREMENT = {int(mx) + 1}"))
+                fixed.append(f"{tbl}({ai}->{int(mx) + 1})")
+        if fixed:
+            conn.commit()  # ALTER 属 DDL, 显式提交
+    return fixed

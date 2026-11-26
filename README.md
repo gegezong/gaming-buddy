@@ -173,3 +173,18 @@ Agent 的提示词、温度、启停状态存于 `agent_config` 表，可在 **�
 
 **AI 助手无响应或报模型错误**
 确认 `DEEPSEEK_API_KEY` 有效、`DEEPSEEK_MODEL` 与账号权限匹配；可在管理后台查看 Agent 调用情况。
+
+**AI 对话报 `Duplicate entry 'N' for key 'agent_message.PRIMARY'`（HTTP 500）**
+自增主键在并发写入下的瞬时冲突。后端已做两层兜底：启动时 `align_auto_increment()` 校准自增计数器，写入失败时 `append_message()` 回滚重试一次。若仍遇到，手工校准一次：
+
+```sql
+SET SESSION information_schema_stats_expiry = 0;   -- 必须: information_schema 的 AUTO_INCREMENT 默认缓存 24 小时
+SELECT TABLE_NAME, AUTO_INCREMENT FROM information_schema.TABLES
+ WHERE TABLE_SCHEMA = 'gaming-buddy' AND TABLE_NAME = 'agent_message';
+ALTER TABLE `agent_message` AUTO_INCREMENT = 100;  -- 取大于最大主键的值
+```
+
+> ⚠️ 排查这类问题时**一定要先关掉统计缓存**：MySQL 8.0 的 `information_schema_stats_expiry` 默认为
+> 86400 秒，`information_schema.TABLES.AUTO_INCREMENT` 读到的是 24 小时前的陈旧值，
+> 用它判断"计数器是否落后"会得出错误结论，甚至把健康的计数器改低。
+

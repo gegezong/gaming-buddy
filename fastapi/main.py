@@ -20,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text  # SQLAlchemy: 原生 SQL 文本
 
 from core.config import settings  # 项目内: 配置
-from core.database import engine  # 项目内: 数据库引擎
+from core.database import align_auto_increment, engine  # 项目内: 数据库引擎与自增计数器自愈
 from core.exceptions import ApiError, AuthError  # 项目内: 自定义异常
 from routers import ALL_ROUTERS  # 项目内: 聚合的全部模块路由
 
@@ -47,6 +47,9 @@ def check_database() -> None:
         with engine.connect() as conn:  # 从连接池取连接(自动释放)
             version = conn.execute(text("SELECT VERSION()")).scalar()  # 查询 MySQL 版本
         print(f"{_GREEN}[OK]{_RESET} 数据库连接正常 (MySQL {version})")  # 成功信息(绿色)
+        fixed = align_auto_increment()  # 自增计数器自愈: 防止计数器落后于最大主键导致插入撞主键
+        if fixed:  # 有表被校准
+            print(f"{_CYAN}[FIX]{_RESET} 已校准自增计数器: {', '.join(fixed)}")  # 提示被修正的表
     except Exception as e:
         print(f"{_RED}[FAIL]{_RESET} 数据库连接失败, 请检查 fastapi/.env 中的数据库配置")  # 失败提示(红色)
         print(f"       原因: {e}")  # 异常原因
